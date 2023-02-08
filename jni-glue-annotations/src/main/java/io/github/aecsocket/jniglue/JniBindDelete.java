@@ -6,7 +6,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * <b>Requires class annotated with {@link JniType}:</b> annotates that a method maps to a C++ {@code delete} call.
+ * <b>Requires class annotated with {@link JniTypeMapping}:</b> annotates that a method maps to a C++ {@code delete} call.
  * The method must have arguments {@code long _a}, with {@code _a} being the address of the object to delete.
  * <p>
  * Generated C++ code:

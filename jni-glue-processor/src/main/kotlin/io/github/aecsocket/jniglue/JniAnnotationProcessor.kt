@@ -10,6 +10,7 @@ import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.PackageElement
 import javax.lang.model.element.TypeElement
+import javax.lang.model.element.VariableElement
 import javax.lang.model.type.TypeMirror
 import javax.tools.StandardLocation
 import kotlin.reflect.KClass
@@ -50,22 +51,31 @@ private fun mangleType(type: TypeMirror) = when (type.toString()) {
 private fun mangleMethod(className: String, methodName: String) =
     "Java_${className.replace('.', '_')}_${mangleMethodName(methodName)}"
 
+private fun TypeMirror.isVoid() = toString() == "void"
+
 private fun TypeMirror.cType() = when (toString()) {
     "void" -> "void"
     "boolean", "char", "byte", "short", "int", "float", "long", "double" -> "j$this"
     else -> "jobject"
 }
 
+private fun TypeMirror.jniCallMethod() = "Call${when (toString()) {
+    "void" -> "Void"
+    "boolean" -> "Boolean"
+    "char" -> "Char"
+    "byte" -> "Byte"
+    "short" -> "Short"
+    "int" -> "Int"
+    "float" -> "Float"
+    "long" -> "Long"
+    "double" -> "Double"
+    else -> "Object"
+}}Method"
+
+private fun String.classPath() = replace('.', '/')
+
 @SupportedAnnotationTypes("io.github.aecsocket.jniglue.*")
 class JniAnnotationProcessor : AbstractProcessor() {
-    data class CallbackBinding(
-        val classPackage: String,
-        val className: String,
-        val methodName: String,
-        val params: List<TypeMirror>,
-        val returns: TypeMirror
-    )
-
     data class MethodBinding(
         val name: String,
         val params: List<String>,
@@ -73,11 +83,26 @@ class JniAnnotationProcessor : AbstractProcessor() {
         val body: List<String>
     )
 
+    data class CallbackBinding(
+        val methodName: String,
+        val isStatic: Boolean,
+        val isConstructor: Boolean,
+        val params: List<VariableElement>,
+        val returns: TypeMirror
+    )
+
+    data class CallbackClass(
+        val fullClassName: String,
+        val simpleClassName: String
+    ) {
+        val methods = ArrayList<CallbackBinding>()
+    }
+
     class ClassModel(val priority: Int) {
         val includes = ArrayList<List<String>>()
-        val callbackBindings = ArrayList<CallbackBinding>()
+        val callbackClasses = ArrayList<CallbackClass>()
         val headers = ArrayList<List<String>>()
-        val init = ArrayList<List<String>>()
+        val setup = ArrayList<List<String>>()
         val methodBindings = ArrayList<MethodBinding>()
     }
 
@@ -104,7 +129,7 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 val outFile = processingEnv.filer.createResource(
                     StandardLocation.SOURCE_OUTPUT,
                     "",
-                    "$path.cpp",
+                    "$path.h",
                     *model.originElements.toTypedArray()
                 )
 
@@ -125,61 +150,77 @@ class JniAnnotationProcessor : AbstractProcessor() {
                         """#include "$include""""
                 }
 
-                // callback bindings
-                data class CallbackMethod(
-                    val name: String,
-                    val signature: String
-                )
+                // type + callback bindings
+                val bindingFields = ArrayList<String>()
+                val bindingFunctions = ArrayList<String>()
+                val bindingSetup = ArrayList<String>()
 
-                data class CallbackClass(
-                    val simpleName: String
-                ) {
-                    val methods = ArrayList<CallbackMethod>()
-                }
-
-                val callbackClasses = LinkedHashMap<String, CallbackClass>()
-                classModels.flatMap { it.callbackBindings }.forEach { callback ->
-                    val className = "${callback.classPackage}.${callback.className}"
-                    val callbackClass = callbackClasses.computeIfAbsent(className) { CallbackClass(callback.className) }
-                    callbackClass.methods += CallbackMethod(
-                        callback.methodName,
-                        "(${callback.params.joinToString("") { mangleType(it) }})${mangleType(callback.returns)}"
-                    )
-                }
-
-                val callbackFields = ArrayList<String>()
-                val jniInit = ArrayList<String>()
-                callbackClasses.toList().forEachIndexed { idx, (className, callback) ->
-                    if (callback.methods.isEmpty()) return@forEachIndexed
-
-                    val classVar = "c$idx"
-                    jniInit += listOf(
-                        """jclass $classVar = env->FindClass("${className.replace('.', '/')}");""",
+                classModels.flatMap { it.callbackClasses }.forEach { callbackClass ->
+                    val classFieldName = "jni_${callbackClass.simpleClassName}"
+                    bindingFields += "jclass $classFieldName;"
+                    bindingSetup += listOf(
+                        """$classFieldName = env->FindClass("${callbackClass.fullClassName.classPath()}");""",
                         "if (env->ExceptionCheck()) return;"
                     )
-                    callback.methods.forEach { method ->
-                        val fieldName = "${callback.simpleName}_${method.name.removePrefix("_")}"
-                        callbackFields += "jmethodID $fieldName;"
-                        jniInit += """$fieldName = env->GetMethodID($classVar, "${method.name}", "${method.signature}");"""
+
+                    callbackClass.methods.forEach { method ->
+                        val baseName = "${callbackClass.simpleClassName}_${method.methodName}"
+                        val methodFieldName = "jni_$baseName"
+                        bindingFields += "jmethodID $methodFieldName;"
+
+                        val functionName = "JNI_$baseName"
+                        val params = (listOfNotNull(
+                            "JNIEnv* env",
+                            if (method.isStatic) null else "jobject _obj"
+                        ) + method.params.map { "${it.asType().cType()} ${it.simpleName}" })
+                            .joinToString(", ")
+                        val args = (listOfNotNull(
+                            classFieldName,
+                            methodFieldName,
+                            "env",
+                            if (method.isStatic) null else "_obj"
+                        ) + method.params.map { it.simpleName })
+                            .joinToString(", ")
+
+                        bindingFunctions += listOf(
+                            "${method.returns.cType()} $functionName",
+                            "  ($params) {"
+                        )
+                        bindingFunctions += "    " + if (method.isConstructor) {
+                            "return env->NewObject($args);"
+                        } else {
+                            (if (method.returns.isVoid()) "" else "return ") +
+                            "env->${method.returns.jniCallMethod()}($args);"
+                        }
+                        bindingFunctions += "}"
+
+                        val signature = "(${method.params.joinToString("") { mangleType(it.asType()) }})${mangleType(method.returns)}"
+                        bindingSetup += listOf(
+                            """$methodFieldName = env->GetMethodID($classFieldName, "${method.methodName}", "$signature");""",
+                            "if (env->ExceptionCheck()) return;"
+                        )
                     }
                 }
 
-                sections += callbackFields
+                sections += bindingFields
+                sections += bindingFunctions
 
                 // headers
                 sections += classModels.flatMap { it.headers }.flatJoin(newline)
 
-                // JNI init
-                jniInit += classModels.flatMap { it.init }.flatten()
-                sections += listOf("void JNIInit(JNIEnv* env) {") + jniInit.map { "    $it" } + "}"
+                // JNI setup
+                val jniSetup = bindingSetup + classModels.flatMap { it.setup }.flatten()
+                sections += listOf("void JNISetup(JNIEnv* env) {") +
+                        jniSetup.map { "    $it" } +
+                        "}"
 
                 // method bindings
                 sections += listOf("""extern "C" {""") + classModels.flatMap { it.methodBindings }
-                    .map { method ->
+                    .map { binding ->
                         listOf(
-                            "JNIEXPORT ${method.returns} JNICALL ${method.name}",
-                            "  (${method.params.joinToString(", ")}) {"
-                        ) + method.body.map { "    $it" } + "}"
+                            "JNIEXPORT ${binding.returns} JNICALL ${binding.name}",
+                            "  (${binding.params.joinToString(", ")}) {"
+                        ) + binding.body.map { "    $it" } + "}"
                     }
                     .flatJoin(newline) + "}"
 
@@ -196,8 +237,9 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 val classModel = ClassModel(jniPriority).also { cppModel.classes += it }
                 cppModel.originElements += classElement
 
-                val packageName = (classElement.enclosingElement as PackageElement).qualifiedName
-                val className = "$packageName.${classElement.simpleName}"
+                val packageName = (classElement.enclosingElement as PackageElement).qualifiedName.toString()
+                val simpleClassName = classElement.simpleName.toString()
+                val fullClassName = "$packageName.$simpleClassName"
 
                 classElement.getAnnotation(JniInclude::class.java)?.let { jniInclude ->
                     classModel.includes += jniInclude.value.lines()
@@ -207,17 +249,23 @@ class JniAnnotationProcessor : AbstractProcessor() {
                     classModel.headers += jniHeader.value.lines()
                 }
 
-                classElement.getAnnotation(JniInit::class.java)?.let { jniInit ->
-                    classModel.init += jniInit.value.lines()
+                classElement.getAnnotation(JniSetup::class.java)?.let { jniInit ->
+                    classModel.setup += jniInit.value.lines()
                 }
 
-                val jniType: JniType? = classElement.getAnnotation(JniType::class.java)
+                val jniTypeMapping: JniTypeMapping? = classElement.getAnnotation(JniTypeMapping::class.java)
+
+                val callbackClass = classElement.getAnnotation(JniReferenced::class.java)?.let {
+                    CallbackClass(fullClassName, simpleClassName).also {
+                        classModel.callbackClasses += it
+                    }
+                }
 
                 fun bindMethod(element: ExecutableElement, body: List<String>) {
                     cppModel.originElements += element
 
                     classModel.methodBindings += MethodBinding(
-                        mangleMethod(className, element.simpleName.toString()),
+                        mangleMethod(fullClassName, element.simpleName.toString()),
                         listOf(
                             "JNIEnv* env",
                             if (element.modifiers.contains(Modifier.STATIC)) "jclass cls" else "jobject obj",
@@ -232,20 +280,26 @@ class JniAnnotationProcessor : AbstractProcessor() {
                         is ExecutableElement -> {
                             val methodName = childElement.simpleName.toString()
 
-                            fun error(annotationType: KClass<*>, message: String) {
-                                errors += "Method $className.$methodName is annotated with ${annotationType.simpleName}, but $message"
+                            fun error(methodAnno: KClass<*>, message: String) {
+                                errors += "Method $fullClassName.$methodName is annotated with ${methodAnno.simpleName}, but $message"
                             }
 
-                            fun requireType(annotationType: KClass<*>) =
-                                error(annotationType, "class is not annotated with ${JniType::class.simpleName}")
+                            fun requireClassAnnotation(methodAnno: KClass<*>, classAnno: KClass<*>) =
+                                error(methodAnno, "class is not annotated with ${classAnno.simpleName}")
+
+                            fun requireTypeMapping(methodAnno: KClass<*>) =
+                                requireClassAnnotation(methodAnno, JniTypeMapping::class)
+
+                            fun requireReferenced(methodAnno: KClass<*>) =
+                                requireClassAnnotation(methodAnno, JniReferenced::class)
 
                             childElement.getAnnotation(JniBind::class.java)?.let { jniBind ->
                                 bindMethod(childElement, jniBind.value.lines())
                             }
 
                             childElement.getAnnotation(JniBindSelf::class.java)?.let { jniBindSelf ->
-                                val selfType = jniType?.value ?: run {
-                                    requireType(JniBindSelf::class)
+                                val selfType = jniTypeMapping?.value ?: run {
+                                    requireTypeMapping(JniBindSelf::class)
                                     return@let
                                 }
 
@@ -265,8 +319,8 @@ class JniAnnotationProcessor : AbstractProcessor() {
                             }
 
                             childElement.getAnnotation(JniBindDelete::class.java)?.let {
-                                val selfType = jniType?.value ?: run {
-                                    requireType(JniBindDelete::class)
+                                val selfType = jniTypeMapping?.value ?: run {
+                                    requireTypeMapping(JniBindDelete::class)
                                     return@let
                                 }
 
@@ -283,18 +337,33 @@ class JniAnnotationProcessor : AbstractProcessor() {
                                 bindMethod(childElement, listOf("delete ($selfType*) _a;"))
                             }
 
-                            childElement.getAnnotation(JniBindInit::class.java)?.let {
-                                bindMethod(childElement, listOf("JNIInit(env);"))
+                            childElement.getAnnotation(JniBindSetup::class.java)?.let {
+                                bindMethod(childElement, listOf("JNISetup(env);"))
                             }
 
                             childElement.getAnnotation(JniCallback::class.java)?.let {
-                                classModel.callbackBindings += CallbackBinding(
-                                    packageName.toString(),
-                                    classElement.simpleName.toString(),
-                                    methodName,
-                                    childElement.parameters.map { param -> param.asType() },
-                                    childElement.returnType
-                                )
+                                if (callbackClass == null) {
+                                    requireReferenced(JniCallback::class)
+                                    return@let
+                                }
+
+                                callbackClass.methods += if (childElement.simpleName.toString() == "<init>") {
+                                    CallbackBinding(
+                                        "_init",
+                                        isStatic = true,
+                                        isConstructor = true,
+                                        childElement.parameters,
+                                        classElement.asType()
+                                    )
+                                } else {
+                                    CallbackBinding(
+                                        methodName.removePrefix("_"),
+                                        childElement.modifiers.contains(Modifier.STATIC),
+                                        isConstructor = false,
+                                        childElement.parameters,
+                                        childElement.returnType
+                                    )
+                                }
                             }
                         }
                     }

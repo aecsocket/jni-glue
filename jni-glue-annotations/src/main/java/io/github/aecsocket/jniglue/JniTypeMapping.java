@@ -10,7 +10,7 @@ import java.lang.annotation.Target;
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.SOURCE)
-public @interface JniType {
+public @interface JniTypeMapping {
     /**
      * The native type to bind to.
      */

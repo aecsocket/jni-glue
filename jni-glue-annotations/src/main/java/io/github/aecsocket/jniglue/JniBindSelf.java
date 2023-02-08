@@ -6,8 +6,8 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * <b>Requires class annotated with {@link JniType}:</b> annotates that a method maps to a native binding call
- * on a native object with a specific memory address. A pointer to an object of type specified by {@link JniType} will
+ * <b>Requires class annotated with {@link JniTypeMapping}:</b> annotates that a method maps to a native binding call
+ * on a native object with a specific memory address. A pointer to an object of type specified by {@link JniTypeMapping} will
  * be generated. The method must have the first argument be {@code long _a}, with {@code _a} being the address of the object.
  * <p>
  * Generated C++ code:

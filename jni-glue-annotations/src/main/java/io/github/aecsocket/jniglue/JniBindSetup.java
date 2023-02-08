@@ -6,9 +6,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Annotates that a method maps to the internal C++ setup function call.
- * A "loader" or "init" class should typically hold a method with this annotation, so the
- * bindings can be initialized.
+ * Annotates that a method maps to the internal native setup function call.
+ * The main "environment initializer" class should typically hold a static method with this annotation, so the
+ * bindings can be set up.
  * <p>
  * Generated C++ code:
  * <code>
@@ -17,4 +17,4 @@ import java.lang.annotation.Target;
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.SOURCE)
-public @interface JniBindInit {}
+public @interface JniBindSetup {}
