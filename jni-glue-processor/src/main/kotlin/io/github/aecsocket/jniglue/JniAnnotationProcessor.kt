@@ -59,7 +59,7 @@ private fun TypeMirror.cType() = when (toString()) {
     else -> "jobject"
 }
 
-private fun TypeMirror.jniCallMethod() = "Call${when (toString()) {
+private fun TypeMirror.jniCallMethod() = when (toString()) {
     "void" -> "Void"
     "boolean" -> "Boolean"
     "char" -> "Char"
@@ -70,7 +70,7 @@ private fun TypeMirror.jniCallMethod() = "Call${when (toString()) {
     "long" -> "Long"
     "double" -> "Double"
     else -> "Object"
-}}Method"
+}
 
 private fun String.classPath() = replace('.', '/')
 
@@ -164,39 +164,52 @@ class JniAnnotationProcessor : AbstractProcessor() {
                     )
 
                     callbackClass.methods.forEach { method ->
-                        val baseName = "${callbackClass.simpleClassName}_${method.methodName}"
+                        val baseMethodName =
+                            if (method.isConstructor) method.methodName
+                            else method.methodName.removePrefix("_")
+                        val baseName = "${callbackClass.simpleClassName}_$baseMethodName"
                         val methodFieldName = "jni_$baseName"
                         bindingFields += "jmethodID $methodFieldName;"
 
                         val functionName = "JNI_$baseName"
-                        val params = (listOfNotNull(
+                        val params = listOfNotNull(
                             "JNIEnv* env",
                             if (method.isStatic) null else "jobject _obj"
-                        ) + method.params.map { "${it.asType().cType()} ${it.simpleName}" })
-                            .joinToString(", ")
-                        val args = (listOfNotNull(
-                            classFieldName,
-                            methodFieldName,
-                            "env",
-                            if (method.isStatic) null else "_obj"
-                        ) + method.params.map { it.simpleName })
-                            .joinToString(", ")
+                        ) + method.params.map { "${it.asType().cType()} ${it.simpleName}" }
+                        val args = method.params.map { it.simpleName }
 
                         bindingFunctions += listOf(
                             "${method.returns.cType()} $functionName",
-                            "  ($params) {"
+                            "  (${params.joinToString()}) {"
                         )
                         bindingFunctions += "    " + if (method.isConstructor) {
-                            "return env->NewObject($args);"
+                            val newArgs = listOf(classFieldName, methodFieldName) + args
+                            "return env->NewObject(${newArgs.joinToString()});"
                         } else {
-                            (if (method.returns.isVoid()) "" else "return ") +
-                            "env->${method.returns.jniCallMethod()}($args);"
+                            val line = if (method.isStatic) {
+                                val newArgs = listOf(
+                                    classFieldName,
+                                    methodFieldName
+                                ) + args
+                                "env->CallStatic${method.returns.jniCallMethod()}Method(${newArgs.joinToString()});"
+                            } else {
+                                val newArgs = listOf(
+                                    "_obj",
+                                    methodFieldName
+                                ) + args
+                                "env->Call${method.returns.jniCallMethod()}Method(${newArgs.joinToString()});"
+                            }
+
+                            if (method.returns.isVoid()) line else "return $line"
                         }
                         bindingFunctions += "}"
 
-                        val signature = "(${method.params.joinToString("") { mangleType(it.asType()) }})${mangleType(method.returns)}"
+                        val sigName = if (method.isConstructor) "<init>" else method.methodName
+                        val sigReturn = if (method.isConstructor) "V" else mangleType(method.returns)
+                        val signature = "(${method.params.joinToString("") { mangleType(it.asType()) }})$sigReturn"
+
                         bindingSetup += listOf(
-                            """$methodFieldName = env->GetMethodID($classFieldName, "${method.methodName}", "$signature");""",
+                            """$methodFieldName = env->Get${if (method.isStatic && !method.isConstructor) "Static" else ""}MethodID($classFieldName, "$sigName", "$signature");""",
                             "if (env->ExceptionCheck()) return;"
                         )
                     }
@@ -357,7 +370,7 @@ class JniAnnotationProcessor : AbstractProcessor() {
                                     )
                                 } else {
                                     CallbackBinding(
-                                        methodName.removePrefix("_"),
+                                        methodName,
                                         childElement.modifiers.contains(Modifier.STATIC),
                                         isConstructor = false,
                                         childElement.parameters,
