@@ -1,7 +1,9 @@
 <div align="center">
 
 # JniGlue
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.aecsocket/jni-glue-annotations)]()
+![CI](https://img.shields.io/github/actions/workflow/status/aecsocket/jni-glue/build.yml)
+![Release](https://img.shields.io/maven-central/v/io.github.aecsocket/jni-glue-annotations?label=release)
+![Snapshot](https://img.shields.io/nexus/s/io.github.aecsocket/jni-glue-annotations?label=snapshot&server=https%3A%2F%2Foss.sonatype.org)
 
 Lightweight library for generating C++ JNI code for a Java project
 
@@ -52,7 +54,7 @@ dependencies {
 Use `@JniNative` to mark a file as part of a JNI model. Afterwards you can use `@JniBind` and `@JniBindSelf` to associate Java methods
 with C functions. For calling Java from JNI, mark a method as `@JniCallback` to generate a `jmethodID` for the method.
 
-To associate a Java class with a C++ class, annotate the class as `@JniType("C++ CLASS NAME")` to allow the use of `@JniBindSelf`, which
+To associate a Java class with a C++ class, annotate the class as `@JniTypeMapping("C++ CLASS NAME")` to allow the use of `@JniBindSelf`, which
 automatically generates these lines for you, with `_a` being the `long` address of the object:
 
 ```cpp
@@ -64,7 +66,7 @@ An example of using this to wrap a C++ `Baz` class or struct:
 ```java
 @JniNative("FooBar/FooBarJNI")
 @JniInclude("<FooBar/Baz.h>")
-@JniType("Baz")
+@JniTypeMapping("Baz")
 public final class Baz {
     public long address;
 
