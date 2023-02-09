@@ -56,6 +56,7 @@ private fun TypeMirror.isVoid() = toString() == "void"
 private fun TypeMirror.cType() = when (toString()) {
     "void" -> "void"
     "boolean", "char", "byte", "short", "int", "float", "long", "double" -> "j$this"
+    "java.lang.String" -> "jstring"
     else -> "jobject"
 }
 
@@ -102,16 +103,17 @@ class JniAnnotationProcessor : AbstractProcessor() {
         val includes = ArrayList<List<String>>()
         val callbackClasses = ArrayList<CallbackClass>()
         val headers = ArrayList<List<String>>()
-        val setup = ArrayList<List<String>>()
+        val onLoad = ArrayList<List<String>>()
         val methodBindings = ArrayList<MethodBinding>()
     }
 
-    class CppModel {
+    class JniModel {
+        var jniVersion: String? = null
         val originElements = HashSet<Element>()
         val classes = ArrayList<ClassModel>()
     }
 
-    val models = HashMap<String, CppModel>()
+    val models = HashMap<String, JniModel>()
     val errors = ArrayList<String>()
 
     override fun getSupportedSourceVersion(): SourceVersion = SourceVersion.latestSupported()
@@ -158,10 +160,10 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 classModels.flatMap { it.callbackClasses }.forEach { callbackClass ->
                     val classFieldName = "jni_${callbackClass.simpleClassName}"
                     bindingFields += "jclass $classFieldName;"
-                    bindingSetup += listOf(
-                        """$classFieldName = env->FindClass("${callbackClass.fullClassName.classPath()}");""",
-                        "if (env->ExceptionCheck()) return;"
-                    )
+                    bindingSetup += """
+                        $classFieldName = env->FindClass("${callbackClass.fullClassName.classPath()}");
+                        if (env->ExceptionCheck()) return JNI_ERR;
+                    """.trimIndent().lines()
 
                     callbackClass.methods.forEach { method ->
                         val baseMethodName =
@@ -208,10 +210,10 @@ class JniAnnotationProcessor : AbstractProcessor() {
                         val sigReturn = if (method.isConstructor) "V" else mangleType(method.returns)
                         val signature = "(${method.params.joinToString("") { mangleType(it.asType()) }})$sigReturn"
 
-                        bindingSetup += listOf(
-                            """$methodFieldName = env->Get${if (method.isStatic && !method.isConstructor) "Static" else ""}MethodID($classFieldName, "$sigName", "$signature");""",
-                            "if (env->ExceptionCheck()) return;"
-                        )
+                        bindingSetup += """
+                            $methodFieldName = env->Get${if (method.isStatic && !method.isConstructor) "Static" else ""}MethodID($classFieldName, "$sigName", "$signature");
+                            if (env->ExceptionCheck()) return JNI_ERR;
+                        """.trimIndent().lines()
                     }
                 }
 
@@ -221,11 +223,21 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 // headers
                 sections += classModels.flatMap { it.headers }.flatJoin(newline)
 
-                // JNI setup
-                val jniSetup = bindingSetup + classModels.flatMap { it.setup }.flatten()
-                sections += listOf("void JNISetup(JNIEnv* env) {") +
-                        jniSetup.map { "    $it" } +
-                        "}"
+                // onLoad
+                val onLoad = bindingSetup + classModels.flatMap { it.onLoad }.flatten()
+                val jniVersion = model.jniVersion ?: "JNI_VERSION_1_6"
+                sections += ("""
+                    JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+                        JNIEnv* env;
+                        if (vm->GetEnv(reinterpret_cast<void**>(&env), $jniVersion) != JNI_OK) {
+                            return JNI_ERR;
+                        }
+                    
+                """.trimIndent() + onLoad.joinToString("\n") { "    $it" } + """
+                    
+                        return $jniVersion;
+                    }
+                """.trimIndent()).lines()
 
                 // method bindings
                 sections += listOf("""extern "C" {""") + classModels.flatMap { it.methodBindings }
@@ -246,9 +258,16 @@ class JniAnnotationProcessor : AbstractProcessor() {
             roundEnv.getElementsAnnotatedWith(JniNative::class.java).forEach { classElement ->
                 val jniNative = classElement.getAnnotation(JniNative::class.java)
                 val jniPriority = classElement.getAnnotation(JniPriority::class.java)?.value ?: NativePriority.NORMAL
-                val cppModel = models.computeIfAbsent(jniNative.value) { CppModel() }
-                val classModel = ClassModel(jniPriority).also { cppModel.classes += it }
-                cppModel.originElements += classElement
+                val jniModel = models.computeIfAbsent(jniNative.value) { JniModel() }
+                classElement.getAnnotation(JniVersion::class.java)?.let { jniVersion ->
+                    if (jniModel.jniVersion == null)
+                        jniModel.jniVersion = jniVersion.value
+                    else
+                        error("Duplicate JniVersion definition")
+                }
+
+                val classModel = ClassModel(jniPriority).also { jniModel.classes += it }
+                jniModel.originElements += classElement
 
                 val packageName = (classElement.enclosingElement as PackageElement).qualifiedName.toString()
                 val simpleClassName = classElement.simpleName.toString()
@@ -262,8 +281,8 @@ class JniAnnotationProcessor : AbstractProcessor() {
                     classModel.headers += jniHeader.value.lines()
                 }
 
-                classElement.getAnnotation(JniSetup::class.java)?.let { jniInit ->
-                    classModel.setup += jniInit.value.lines()
+                classElement.getAnnotation(JniOnLoad::class.java)?.let { jniInit ->
+                    classModel.onLoad += jniInit.value.lines()
                 }
 
                 val jniTypeMapping: JniTypeMapping? = classElement.getAnnotation(JniTypeMapping::class.java)
@@ -275,7 +294,7 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 }
 
                 fun bindMethod(element: ExecutableElement, body: List<String>) {
-                    cppModel.originElements += element
+                    jniModel.originElements += element
 
                     classModel.methodBindings += MethodBinding(
                         mangleMethod(fullClassName, element.simpleName.toString()),
@@ -348,10 +367,6 @@ class JniAnnotationProcessor : AbstractProcessor() {
                                 }
 
                                 bindMethod(childElement, listOf("delete ($selfType*) _a;"))
-                            }
-
-                            childElement.getAnnotation(JniBindSetup::class.java)?.let {
-                                bindMethod(childElement, listOf("JNISetup(env);"))
                             }
 
                             childElement.getAnnotation(JniCallback::class.java)?.let {
