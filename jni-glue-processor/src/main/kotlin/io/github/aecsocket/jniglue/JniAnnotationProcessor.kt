@@ -398,6 +398,6 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 }
             }
         }
-        return false
+        return true
     }
 }
