@@ -20,14 +20,14 @@ jobs:
             echo "VERSION_TYPE=release" >> $GITHUB_ENV
           fi
       - name: "Publish snapshot"
-        if: "${{ env.VERSION_TYPE != 'snapshot' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+        if: "${{ env.VERSION_TYPE == 'snapshot' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
         run: ./gradlew publish
         env:
           ORG_GRADLE_PROJECT_sonatypeUsername: "${{ secrets.SONATYPE_USERNAME }}"
           ORG_GRADLE_PROJECT_sonatypePassword: "${{ secrets.SONATYPE_PASSWORD }}"
       - name: "Publish release"
         if: "${{ env.VERSION_TYPE == 'release' && github.event_name == 'push' }}"
-        run: ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
+        run: ./gradlew -PforceSign=true publishToSonatype closeAndReleaseSonatypeStagingRepository
         env:
           ORG_GRADLE_PROJECT_sonatypeUsername: "${{ secrets.SONATYPE_USERNAME }}"
           ORG_GRADLE_PROJECT_sonatypePassword: "${{ secrets.SONATYPE_PASSWORD }}"

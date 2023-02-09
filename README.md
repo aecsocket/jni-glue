@@ -1,6 +1,7 @@
 <div align="center">
 
 # JniGlue
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.aecsocket/jni-glue-annotations)]()
 
 Lightweight library for generating C++ JNI code for a Java project
 
