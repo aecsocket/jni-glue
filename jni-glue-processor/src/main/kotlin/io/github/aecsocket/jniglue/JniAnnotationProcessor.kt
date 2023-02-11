@@ -53,6 +53,8 @@ private fun mangleMethod(className: String, methodName: String) =
 
 private fun TypeMirror.isVoid() = toString() == "void"
 
+private fun TypeMirror.isString() = toString() == "java.lang.String"
+
 private fun TypeMirror.cType() = when (toString()) {
     "void" -> "void"
     "boolean", "char", "byte", "short", "int", "float", "long", "double" -> "j$this"
@@ -202,7 +204,12 @@ class JniAnnotationProcessor : AbstractProcessor() {
                                 "env->Call${method.returns.jniCallMethod()}Method(${newArgs.joinToString()});"
                             }
 
-                            if (method.returns.isVoid()) line else "return $line"
+                            if (method.returns.isVoid()) {
+                                line
+                            } else {
+                                if (method.returns.isString()) "return (jstring) $line"
+                                else "return $line"
+                            }
                         }
                         bindingFunctions += "}"
 
