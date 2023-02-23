@@ -1,10 +1,6 @@
 plugins {
+    id("kotlin-conventions")
     id("publishing-conventions")
-    kotlin("jvm")
-}
-
-kotlin {
-    jvmToolchain(indra.javaVersions().target().get())
 }
 
 dependencies {

@@ -57,7 +57,15 @@ private fun TypeMirror.isString() = toString() == "java.lang.String"
 
 private fun TypeMirror.cType() = when (toString()) {
     "void" -> "void"
-    "boolean", "char", "byte", "short", "int", "float", "long", "double" -> "j$this"
+    "boolean", "byte", "char", "short", "int", "float", "long", "double" -> "j$this"
+    "boolean[]" -> "jbooleanArray"
+    "byte[]" -> "jbyteArray"
+    "char[]" -> "jcharArray"
+    "short[]" -> "jshortArray"
+    "int[]" -> "jintArray"
+    "long[]" -> "jlongArray"
+    "float[]" -> "jfloatArray"
+    "double[]" -> "jdoubleArray"
     "java.lang.String" -> "jstring"
     else -> "jobject"
 }
@@ -76,6 +84,11 @@ private fun TypeMirror.jniCallMethod() = when (toString()) {
 }
 
 private fun String.classPath() = replace('.', '/')
+
+private fun Element.enclosingPackage(): PackageElement {
+    val enclosing = enclosingElement
+    return if (enclosing is PackageElement) enclosing else enclosing.enclosingPackage()
+}
 
 @SupportedAnnotationTypes("io.github.aecsocket.jniglue.*")
 class JniAnnotationProcessor : AbstractProcessor() {
@@ -276,7 +289,7 @@ class JniAnnotationProcessor : AbstractProcessor() {
                 val classModel = ClassModel(jniPriority).also { jniModel.classes += it }
                 jniModel.originElements += classElement
 
-                val packageName = (classElement.enclosingElement as PackageElement).qualifiedName.toString()
+                val packageName = classElement.enclosingPackage().qualifiedName.toString()
                 val simpleClassName = classElement.simpleName.toString()
                 val fullClassName = "$packageName.$simpleClassName"
 

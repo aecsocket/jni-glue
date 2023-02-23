@@ -1,0 +1,12 @@
+metadata:
+  format: { version: 1.0 }
+  polyglot-extensions: [ plugins ]
+
+versions:
+  indra: 3.0.1
+  kotlin: 1.8.10
+
+dependencies:
+  indraCommon: { group: net.kyori, name: indra-common, version: { ref: indra } }
+  indraPublishingSonatype: { group: net.kyori, name: indra-publishing-sonatype, version: { ref: indra } }
+  kotlin: { group: org.jetbrains.kotlin, name: kotlin-gradle-plugin, version: { ref: kotlin } }
